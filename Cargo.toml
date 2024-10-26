@@ -1,0 +1,9 @@
+[package]
+name = "awg-config-decoder"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+atty = "0.2.14"
+base64 = "0.22.1"
+flate2 = "1.0"

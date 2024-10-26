@@ -1,0 +1,1 @@
+QT-less Rust version of [Amnezia config decoder](https://github.com/amnezia-vpn/config-decoder/)

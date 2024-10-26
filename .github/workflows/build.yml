@@ -1,0 +1,90 @@
+name: Build
+
+on:
+  push:
+    branches: [ "master" ]
+    tags: [ '*' ]
+  pull_request:
+    branches: [ "master" ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+   build:
+
+     runs-on: ${{ matrix.os }}
+
+     strategy:
+       matrix:
+         os: [ubuntu-latest, windows-latest]
+
+     steps:
+     - uses: actions/checkout@v4
+
+     - name: Install dependencies on Ubuntu
+       if: matrix.os == 'ubuntu-latest'
+       run: sudo apt-get update && sudo apt-get install -y libudev-dev
+
+     - name: Build
+       run: cargo build --release
+
+     - name: Run tests
+       run: cargo test
+
+     - name: Upload binary
+       if: success()
+       uses: actions/upload-artifact@v2
+       with:
+         name: ${{ matrix.os }}-awg-config-decoder
+         path: target/release/awg-config-decoder${{ matrix.os == 'windows-latest' && '.exe' || '' }}
+
+   release:
+     if: startsWith(github.ref, 'refs/tags/')
+     needs: build
+     runs-on: ubuntu-latest
+     steps:
+     - uses: actions/checkout@v4
+
+     - name: Download binaries for Ubuntu
+       uses: actions/download-artifact@v2
+       with:
+         name: ubuntu-latest-awg-config-decoder
+         path: artifacts/ubuntu
+
+     - name: Download binaries for Windows
+       uses: actions/download-artifact@v2
+       with:
+         name: windows-latest-awg-config-decoder
+         path: artifacts/windows
+
+     - name: Create Release
+       id: create_release
+       uses: actions/create-release@v1
+       env:
+         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+       with:
+         tag_name: ${{ github.ref }}
+         release_name: Release ${{ github.ref }}
+         draft: false
+         prerelease: false
+
+     - name: Upload Release Asset for Ubuntu
+       uses: actions/upload-release-asset@v1
+       env:
+         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+       with:
+         upload_url: ${{ steps.create_release.outputs.upload_url }}
+         asset_path: artifacts/ubuntu/awg-config-decoder
+         asset_name: awg-config-decoder-ubuntu
+         asset_content_type: application/octet-stream
+
+     - name: Upload Release Asset for Windows
+       uses: actions/upload-release-asset@v1
+       env:
+         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+       with:
+         upload_url: ${{ steps.create_release.outputs.upload_url }}
+         asset_path: artifacts/windows/awg-config-decoder.exe
+         asset_name: awg-config-decoder-windows.exe
+         asset_content_type: application/octet-stream
