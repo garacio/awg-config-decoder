@@ -34,7 +34,7 @@ jobs:
 
      - name: Upload binary
        if: success()
-       uses: actions/upload-artifact@v2
+       uses: actions/upload-artifact@v3
        with:
          name: ${{ matrix.os }}-awg-config-decoder
          path: target/release/awg-config-decoder${{ matrix.os == 'windows-latest' && '.exe' || '' }}
@@ -47,13 +47,13 @@ jobs:
      - uses: actions/checkout@v4
 
      - name: Download binaries for Ubuntu
-       uses: actions/download-artifact@v2
+       uses: actions/download-artifact@v3
        with:
          name: ubuntu-latest-awg-config-decoder
          path: artifacts/ubuntu
 
      - name: Download binaries for Windows
-       uses: actions/download-artifact@v2
+       uses: actions/download-artifact@v3
        with:
          name: windows-latest-awg-config-decoder
          path: artifacts/windows
