@@ -1,1 +1,3 @@
-QT-less Rust version of [Amnezia config decoder](https://github.com/amnezia-vpn/config-decoder/)
+# awg-config-decoder
+
+QT-less Rust version of [Amnezia config decoder](https://github.com/amnezia-vpn/config-decoder/).
