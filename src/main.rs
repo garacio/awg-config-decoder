@@ -1,121 +1,151 @@
-use std::{env, process};
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use std::io::{self, IsTerminal, Read, Write};
+use std::process::ExitCode;
+
 use base64::Engine;
-use flate2::read::ZlibDecoder;
-use std::io::{self, Read, Write};
-use clap;
-use clap::{CommandFactory, Parser};
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use clap::{ArgGroup, Parser};
 use flate2::Compression;
+use flate2::read::ZlibDecoder;
 use flate2::write::ZlibEncoder;
 
 #[derive(Parser)]
-#[clap(name="awg-config-decoder", version)]
+#[command(name = "awg-config-decoder", version)]
+#[command(group(
+    ArgGroup::new("mode")
+        .required(true)
+        .args(["encode", "decode"]),
+))]
 struct Args {
-    /// Encode string
-    #[clap(long, short='e')]
+    /// Encode string to a vpn:// URL
+    #[arg(long, short = 'e')]
     encode: bool,
-    /// Decode string
-    #[clap(long, short='d')]
+
+    /// Decode a vpn:// URL to the original config
+    #[arg(long, short = 'd')]
     decode: bool,
+
+    /// Input string (read from stdin if omitted)
+    input: Option<String>,
 }
 
-fn awg_config_decode(mut base64_input: String) {
-    // Check for "vpn://" prefix and remove it if present
-    if base64_input.starts_with("vpn://") {
-        base64_input = base64_input.replacen("vpn://", "", 1);
+fn awg_config_decode(input: &str) -> Result<String, String> {
+    let payload = input.strip_prefix("vpn://").unwrap_or(input);
+
+    let compressed = URL_SAFE_NO_PAD
+        .decode(payload)
+        .map_err(|e| format!("Base64 decoding error: {e}"))?;
+
+    // Qt prefixes zlib-compressed data with a 4-byte big-endian length header.
+    if compressed.len() < 4 {
+        return Err(format!(
+            "Input too short: expected at least 4 bytes after Base64 decode, got {}",
+            compressed.len()
+        ));
     }
 
-    // Decode the input from Base64 (URL_SAFE_NO_PAD mode)
-    let compressed_data = match URL_SAFE_NO_PAD.decode(&base64_input) {
-        Ok(data) => data,
-        Err(e) => {
-            eprintln!("Base64 decoding error: {:?} \n data {:?}", e, &base64_input);
-            return;
-        }
-    };
+    let mut decoder = ZlibDecoder::new(&compressed[4..]);
+    let mut decompressed = Vec::new();
+    decoder
+        .read_to_end(&mut decompressed)
+        .map_err(|e| format!("Decompression error: {e}"))?;
 
-    // let header = &compressed_data[0..4];
-    // println!("Removed header bytes: {:?}", header);
-    // let length_of_uncompressed_data = u32::from_be_bytes([header[0], header[1], header[2], header[3]]);
-    // println!("Expected uncompressed data length (from header): {}", length_of_uncompressed_data);
-
-    // Remove the Qt-specific header (first 4 bytes)
-    let qt_compressed_data = &compressed_data[4..];
-    // println!("Compressed data length after removing header: {}", qt_compressed_data.len());
-    // println!("Compressed data (hex): {:?}", qt_compressed_data);
-
-    // Decompress the data using Zlib
-    let mut decoder = ZlibDecoder::new(qt_compressed_data);
-    let mut decompressed_data = Vec::new();
-
-    match decoder.read_to_end(&mut decompressed_data) {
-        Ok(_) => {
-            // println!("Decompressed data length: {}", decompressed_data.len());
-            match String::from_utf8(decompressed_data) {
-                Ok(text) => println!("{}", text),
-                Err(e) => eprintln!("UTF-8 conversion error: {:?}", e),
-            }
-        }
-        Err(e) => eprintln!("Decompression error: {:?}", e),
-    }
+    String::from_utf8(decompressed).map_err(|e| format!("UTF-8 conversion error: {e}"))
 }
 
-fn awg_config_encode(data: String) {
-    let data_bytes = data.as_bytes();
-    let mut qt_compressed_data = Vec::with_capacity(4 + data_bytes.len());
-    qt_compressed_data.extend(&(data_bytes.len() as u32).to_be_bytes());
+fn awg_config_encode(input: &str) -> Result<String, String> {
+    let data = input.as_bytes();
+    let mut output = Vec::with_capacity(4 + data.len());
+    output.extend_from_slice(&(data.len() as u32).to_be_bytes());
 
-    let mut encoder = ZlibEncoder::new(Vec::new(), Compression::new(8));
-    encoder.write_all(data_bytes).expect("Failed to compress data");
-    let compressed_data = encoder.finish().expect("Failed to finish compression");
+    let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
+    encoder
+        .write_all(data)
+        .map_err(|e| format!("Compression error: {e}"))?;
+    let compressed = encoder
+        .finish()
+        .map_err(|e| format!("Compression error: {e}"))?;
+    output.extend_from_slice(&compressed);
 
-    qt_compressed_data.extend(compressed_data);
-    let compressed_base64 = URL_SAFE_NO_PAD.encode(&qt_compressed_data);
-
-    println!("vpn://{}", compressed_base64)
+    Ok(format!("vpn://{}", URL_SAFE_NO_PAD.encode(&output)))
 }
 
-fn main() {
-    let args = Args::parse();
-
-    // Check if there's an argument provided
-    let mut user_input = if let Some(arg) = env::args().nth(2) {
+fn read_input(explicit: Option<String>) -> io::Result<String> {
+    let raw = if let Some(arg) = explicit {
         arg
     } else {
-        // Check if there is data in stdin
-        let mut input = String::new();
-        if atty::is(atty::Stream::Stdin) {
+        let mut stdin = io::stdin();
+        let mut buffer = String::new();
+        if stdin.is_terminal() {
             println!("Enter string:");
-            io::stdin().read_line(&mut input).expect("Failed to read input");
+            stdin.read_line(&mut buffer)?;
         } else {
-            io::stdin().read_to_string(&mut input).expect("Failed to read input from stdin");
+            stdin.read_to_string(&mut buffer)?;
         }
-        input.trim().to_string()
+        buffer.trim().to_string()
     };
 
-    // Remove BOM if present
-    if user_input.starts_with('\u{feff}') {
-        user_input = user_input.trim_start_matches('\u{feff}').to_string();
+    Ok(raw.trim_start_matches('\u{feff}').to_string())
+}
+
+fn main() -> ExitCode {
+    let args = Args::parse();
+
+    let input = match read_input(args.input) {
+        Ok(value) => value,
+        Err(e) => {
+            eprintln!("Failed to read input: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let result = if args.encode {
+        awg_config_encode(&input)
+    } else {
+        awg_config_decode(&input)
+    };
+
+    match result {
+        Ok(output) => {
+            println!("{output}");
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("{e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn encode_decode_round_trip() {
+        let original = "[Interface]\nPrivateKey = abc\nAddress = 10.0.0.2/32\n";
+        let encoded = awg_config_encode(original).expect("encode succeeds");
+        assert!(encoded.starts_with("vpn://"));
+        let decoded = awg_config_decode(&encoded).expect("decode succeeds");
+        assert_eq!(decoded, original);
     }
 
-    // Проверка на наличие обоих флагов
-    if args.encode && args.decode {
-        eprintln!("Error: You can only select either encode (-e) or decode (-d), not both.");
-        process::exit(1);
+    #[test]
+    fn decode_accepts_payload_without_prefix() {
+        let encoded = awg_config_encode("hello").expect("encode succeeds");
+        let payload = encoded.strip_prefix("vpn://").unwrap();
+        let decoded = awg_config_decode(payload).expect("decode succeeds");
+        assert_eq!(decoded, "hello");
     }
 
-    // Проверка, если ни один флаг не передан
-    if !args.encode && !args.decode {
-        // Выводим help и завершаем программу
-        Args::command().print_help().unwrap();
-        println!();
-        process::exit(0);
+    #[test]
+    fn decode_short_input_returns_error() {
+        let err = awg_config_decode("AAA").unwrap_err();
+        assert!(err.contains("too short"), "unexpected error: {err}");
     }
 
-    // Запуск соответствующей функции
-    if args.encode {
-        awg_config_encode(user_input);
-    } else if args.decode {
-        awg_config_decode(user_input);
+    #[test]
+    fn decode_invalid_base64_returns_error() {
+        let err = awg_config_decode("vpn://!!!not-base64!!!").unwrap_err();
+        assert!(err.contains("Base64"), "unexpected error: {err}");
     }
 }
